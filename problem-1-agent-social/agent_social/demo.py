@@ -70,7 +70,9 @@ def run_demo() -> dict:
 
 def main() -> None:
     out = run_demo()
-    print("=== Problem 1 demo: agent social relevance routing ===\n")
+    print("=== Problem 1 demo: PDF Swiggy Diwali routing ===\n")
+    print("Expect: notify PhonePe + HDFC Bank; skip Bajaj Auto.")
+    print("Expect PhonePe comment: Extra ₹50 cashback … PhonePe UPI on Diwali.\n")
     print(f"Post by {out['post']['author']}: \"{out['post']['content']}\"")
     print(f"Tags: {', '.join(out['post']['tags'])}\n")
 
@@ -93,18 +95,20 @@ def main() -> None:
         flag = "NOTIFY" if r["notified"] else "skip"
         print(
             f"  [{flag}] {r['company']}: total={r['score']} "
-            f"(tag={r['tag_score']}, text={r['text_score']})"
+            f"(concept={r['tag_score']}, text={r['text_score']})"
         )
 
-    # Machine-readable dump for CI / screenshots
     print("\n--- JSON ---")
     print(json.dumps(out, indent=2))
 
     companies = {n["company"] for n in out["notified"]}
-    assert "PhonePe" in companies, "expected PhonePe to be notified"
-    assert "HDFC Bank" in companies, "expected HDFC Bank to be notified"
+    assert companies == {"PhonePe", "HDFC Bank"}, f"unexpected notify set: {companies}"
     assert "Bajaj Auto" not in companies, "Bajaj Auto should not be notified"
-    print("\nDemo assertions passed.")
+    phonepe = next(c["comment"] for c in out["comments"] if c["company"] == "PhonePe")
+    assert phonepe == (
+        "Extra ₹50 cashback when you pay for Swiggy orders with PhonePe UPI on Diwali."
+    )
+    print("\nDemo assertions passed (PDF example).")
 
 
 if __name__ == "__main__":

@@ -93,6 +93,7 @@ def _fake_runner(outputs: dict[str, str]):
 
 
 def test_agent_ram_question_with_fixtures():
+    """PDF example: 16 GB in 1 of 2 slots, max 64 GB → can add up to 32 GB."""
     outputs = {
         "free -h": FREE_H,
         "cat /proc/meminfo": MEMINFO,
@@ -100,11 +101,13 @@ def test_agent_ram_question_with_fixtures():
     }
     agent = HardwareQAAgent(runner=_fake_runner(outputs))
     result = agent.ask("Can I add more RAM, and how much?")
-    assert "16" in result.answer or "15Gi" in result.answer or "Gi" in result.answer
+    assert "16 GB" in result.answer
+    assert "1 of 2 slots" in result.answer
     assert "64 GB" in result.answer
-    assert "slot" in result.answer.lower()
+    assert "32 GB" in result.answer
     assert result.mode == "deterministic"
-    assert any("free" in t or "dmidecode" in t for t in result.tools_used)
+    assert any("dmidecode" in t for t in result.tools_used)
+    assert any("free" in t or "meminfo" in t for t in result.tools_used)
 
 
 def test_agent_nvme_question():

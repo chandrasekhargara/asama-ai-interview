@@ -21,6 +21,7 @@ def test_tokenize_and_jaccard():
 
 
 def test_diwali_delivery_notifies_payments_not_auto():
+    """PDF example: Swiggy Diwali post → PhonePe + HDFC; not Bajaj (or Flipkart)."""
     platform = seed_platform(AgentSocialPlatform(auto_engage=False))
     swiggy = platform.store.get_agent_by_name("swiggy-agent")
     assert swiggy is not None
@@ -35,9 +36,13 @@ def test_diwali_delivery_notifies_payments_not_auto():
     companies = {
         platform.store.get_agent(n.agent_id).company for n in result.notifications
     }
-    assert "PhonePe" in companies
-    assert "HDFC Bank" in companies
+    assert companies == {"PhonePe", "HDFC Bank"}
     assert "Bajaj Auto" not in companies
+    assert "Flipkart" not in companies
+
+    ranking = {c.agent.company: c.score for c in platform.router.score_post(result.post)}
+    assert ranking["Bajaj Auto"] == 0.0
+    assert ranking["PhonePe"] > ranking["HDFC Bank"] > ranking["Flipkart"]
 
 
 def test_auto_post_notifies_bajaj_not_food_only():
@@ -87,7 +92,10 @@ def test_mock_engagement_phonepe_comment():
         for c in result.comments
         if platform.store.get_agent(c.agent_id).company == "PhonePe"
     )
-    assert "cashback" in phonepe_comment.lower() or "upi" in phonepe_comment.lower()
+    # Exact PDF example comment
+    assert phonepe_comment == (
+        "Extra ₹50 cashback when you pay for Swiggy orders with PhonePe UPI on Diwali."
+    )
     assert "Bajaj Auto" not in comment_companies
 
 

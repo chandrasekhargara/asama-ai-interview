@@ -150,47 +150,40 @@ class HardwareQAAgent:
             mem = structured.get("memory_free") or structured.get("memory_meminfo") or {}
             total = mem.get("total_human")
             avail = mem.get("available_human")
-            if total:
-                line = f"This machine currently has about {total} of RAM"
-                if avail:
-                    line += f" ({avail} available)"
-                line += "."
-                parts.append(line)
             dmi = structured.get("memory_dmi") or {}
-            if dmi.get("max_capacity") or dmi.get("slots_total") is not None:
-                slots_total = dmi.get("slots_total")
-                slots_used = dmi.get("slots_used")
-                max_cap = dmi.get("max_capacity")
-                modules = dmi.get("installed_modules") or []
-                detail = []
-                if slots_total is not None and slots_used is not None:
-                    detail.append(f"{slots_used} of {slots_total} slots filled")
-                if modules:
-                    detail.append("installed: " + ", ".join(modules))
-                if max_cap:
-                    detail.append(f"board max capacity {max_cap}")
-                if detail:
-                    parts.append("From DMI: " + "; ".join(detail) + ".")
-                if (
-                    max_cap
-                    and slots_total
-                    and slots_used is not None
-                    and slots_used < slots_total
-                    and re.search(r"add|upgrade|more", q)
-                ):
+            upgrade_q = bool(re.search(r"\b(add|upgrade|more|slot|max|maximum)\b", q))
+            pdf_style = self._memory_upgrade_summary(dmi, total)
+            if upgrade_q and pdf_style:
+                parts.append(pdf_style)
+            else:
+                if total:
+                    line = f"This machine currently has about {total} of RAM"
+                    if avail:
+                        line += f" ({avail} available)"
+                    line += "."
+                    parts.append(line)
+                if dmi.get("max_capacity") or dmi.get("slots_total") is not None:
+                    slots_total = dmi.get("slots_total")
+                    slots_used = dmi.get("slots_used")
+                    max_cap = dmi.get("max_capacity")
+                    modules = dmi.get("installed_modules") or []
+                    detail = []
+                    if slots_total is not None and slots_used is not None:
+                        detail.append(f"{slots_used} of {slots_total} slots filled")
+                    if modules:
+                        detail.append("installed: " + ", ".join(modules))
+                    if max_cap:
+                        detail.append(f"board max capacity {max_cap}")
+                    if detail:
+                        parts.append("From DMI: " + "; ".join(detail) + ".")
+                elif dmi.get("raw_error") or dmi.get("note"):
                     parts.append(
-                        f"You can likely add more RAM in the empty slot(s), "
-                        f"up to the board maximum of {max_cap}. "
-                        "Match DDR generation/speed with existing modules."
+                        "I could not read DIMM slot / max-capacity details "
+                        f"({dmi.get('raw_error') or 'dmidecode unavailable'}). "
+                        "Re-run with permissions for `dmidecode -t memory` for upgrade advice."
                     )
-            elif dmi.get("raw_error") or dmi.get("note"):
-                parts.append(
-                    "I could not read DIMM slot / max-capacity details "
-                    f"({dmi.get('raw_error') or 'dmidecode unavailable'}). "
-                    "Re-run with permissions for `dmidecode -t memory` for upgrade advice."
-                )
-            elif not total:
-                parts.append("I don't know the RAM size — `free`/`meminfo` returned no data.")
+                elif not total:
+                    parts.append("I don't know the RAM size — `free`/`meminfo` returned no data.")
 
         if "cpu" in intents:
             cpu = structured.get("cpu") or {}
@@ -264,6 +257,67 @@ class HardwareQAAgent:
 
         # Safety: never invent upgrade numbers beyond tool output
         return " ".join(parts)
+
+    @staticmethod
+    def _parse_capacity_gb(text: str | None) -> float | None:
+        if not text:
+            return None
+        m = re.search(r"([\d.]+)\s*(Gi|GB|G)?", text, re.I)
+        if not m:
+            return None
+        value = float(m.group(1))
+        unit = (m.group(2) or "G").lower()
+        # Treat Gi ≈ GB for plain-language upgrade advice.
+        if unit.startswith("g"):
+            return value
+        if unit.startswith("m"):
+            return value / 1024.0
+        return value
+
+    def _memory_upgrade_summary(self, dmi: dict, total_human: str | None) -> str | None:
+        """
+        Prefer the PDF-style answer when slot + max-capacity facts are present:
+        'You have 16 GB in 1 of 2 slots. The board supports up to 64 GB, so you
+        can add a stick of up to 32 GB.'
+        """
+        slots_total = dmi.get("slots_total")
+        slots_used = dmi.get("slots_used")
+        max_cap = dmi.get("max_capacity")
+        modules = dmi.get("installed_modules") or []
+        if slots_total is None or slots_used is None or not max_cap:
+            return None
+
+        installed_label = modules[0] if len(modules) == 1 else (
+            " + ".join(modules) if modules else total_human
+        )
+        if not installed_label:
+            return None
+
+        # Normalize "16 GB" style for readability.
+        installed_gb = self._parse_capacity_gb(
+            modules[0] if len(modules) == 1 else total_human or installed_label
+        )
+        if installed_gb is not None and len(modules) <= 1:
+            installed_label = f"{int(installed_gb) if installed_gb.is_integer() else installed_gb} GB"
+
+        max_gb = self._parse_capacity_gb(max_cap)
+        parts = [
+            f"You have {installed_label} in {slots_used} of {slots_total} slots. "
+            f"The board supports up to {max_cap}"
+        ]
+        empty = slots_total - slots_used
+        if empty > 0 and max_gb is not None and installed_gb is not None:
+            remaining = max(0.0, max_gb - installed_gb)
+            # Prefer per-slot board limit (max/slots) over raw remaining capacity —
+            # matches the PDF: 64 GB / 2 slots → stick up to 32 GB, not 48 GB.
+            per_slot = max_gb / slots_total if slots_total else remaining
+            per_stick = min(remaining, per_slot)
+            if per_stick > 0:
+                stick = int(per_stick) if float(per_stick).is_integer() else per_stick
+                parts.append(f", so you can add a stick of up to {stick} GB")
+        parts.append(".")
+        parts.append(" Match DDR generation/speed with existing modules.")
+        return "".join(parts)
 
     def _answer_with_llm(
         self,
