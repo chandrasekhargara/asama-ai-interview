@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .models import Agent, Comment, Notification, Post
+from .models import (
+    Agent,
+    Comment,
+    Notification,
+    Post,
+    RoutingLog,
+    RoutingStatus,
+    WebhookDelivery,
+)
 
 
 class InMemoryStore:
@@ -13,6 +21,8 @@ class InMemoryStore:
         self.posts: dict[str, Post] = {}
         self.comments: dict[str, Comment] = {}
         self.notifications: dict[str, Notification] = {}
+        self.routing_logs: dict[str, RoutingLog] = {}
+        self.webhook_deliveries: dict[str, WebhookDelivery] = {}
         self._name_index: dict[str, str] = {}
 
     def register_agent(self, agent: Agent) -> Agent:
@@ -70,3 +80,39 @@ class InMemoryStore:
         n = self.notifications[notification_id]
         n.engaged = engaged
         return n
+
+    def add_routing_log(self, log: RoutingLog) -> RoutingLog:
+        self.routing_logs[log.id] = log
+        return log
+
+    def routing_logs_for_post(self, post_id: str) -> list[RoutingLog]:
+        return [r for r in self.routing_logs.values() if r.post_id == post_id]
+
+    def update_routing_status(
+        self, post_id: str, target_agent_id: str, status: RoutingStatus
+    ) -> Optional[RoutingLog]:
+        for log in self.routing_logs.values():
+            if log.post_id == post_id and log.target_agent_id == target_agent_id:
+                log.status = status
+                return log
+        return None
+
+    def add_webhook_delivery(self, delivery: WebhookDelivery) -> WebhookDelivery:
+        self.webhook_deliveries[delivery.id] = delivery
+        return delivery
+
+    def engagement_stats(self) -> dict:
+        """Feedback hook: engagement rate for closed-loop routing."""
+        logs = list(self.routing_logs.values())
+        notified = [r for r in logs if r.status in {
+            RoutingStatus.NOTIFIED, RoutingStatus.ENGAGED, RoutingStatus.IGNORED
+        }]
+        engaged = [r for r in logs if r.status == RoutingStatus.ENGAGED]
+        ignored = [r for r in logs if r.status == RoutingStatus.IGNORED]
+        return {
+            "routing_log_count": len(logs),
+            "notified_or_outcome": len(notified),
+            "engaged": len(engaged),
+            "ignored": len(ignored),
+            "engagement_rate": (len(engaged) / len(notified)) if notified else 0.0,
+        }

@@ -1,14 +1,14 @@
 # Asama.ai interview submission
 
 **Repo:** https://github.com/chandrasekhargara/asama-ai-interview  
-**Source brief:** Interview Problems PDF (Nov 12, 2026). Notion page `Asama-ai` was re-fetched and still returned empty/unauthenticated content — this submission is aligned to the PDF only.
+**Source:** Interview Problems PDF (Nov 12, 2026) + Notion engineering guides (multi-stage routing, HMAC webhooks, tool-name allow-list, privilege A/B/C).
 
 ## What I built
 
 | Problem | Deliverable | Interview signal |
 |---------|-------------|------------------|
-| 1 — Social network for AI agents | In-memory platform: register → post → **hybrid relevance route** → notify → comment | Routing quality, not “Twitter clone” |
-| 2 — Hardware Q&A on Linux | CLI chatbot with **allow-listed read-only tools**, parsers, deterministic (+ optional OpenAI) answers | Tool-calling safety, not chat UX |
+| 1 — Social network for AI agents | FastAPI `/api/v1/*`, 3-tier router (A hard filters → B TF–IDF top-K → C rerank ≥ 0.75), HMAC webhook stub, `routing_logs` + feedback | Relevance quality at scale, not a Twitter clone |
+| 2 — Hardware Q&A on Linux | CLI that selects **tool names** only; privilege strategies A/B/C; context cache; answers from structured JSON | Tool-calling safety, not chat UX |
 
 ## Demos (< 2 minutes)
 
@@ -17,20 +17,22 @@ git clone https://github.com/chandrasekhargara/asama-ai-interview
 cd asama-ai-interview
 pip install -r problem-1-agent-social/requirements.txt -r problem-2-hardware-qa/requirements.txt
 
-# Problem 1 — exact PDF flow (Swiggy → PhonePe + HDFC; not Bajaj; PhonePe ₹50 UPI comment)
+# Problem 1 — exact PDF flow + Stage-C ≥ 0.75 + HMAC log stubs
 cd problem-1-agent-social && python3 -m agent_social.demo
 
-# Problem 2 — PDF RAM-upgrade example via fixtures (no root / dmidecode needed)
+# Problem 2 — PDF RAM-upgrade + GPU follow-up (fixtures; no root)
 cd ../problem-2-hardware-qa && python3 -m hardware_qa.cli --demo-pdf
 
-# Optional: live tools on this machine
+# Optional: live tools / API
 python3 -m hardware_qa.cli --demo
+python3 -m hardware_qa.cli --privileges
+cd ../problem-1-agent-social && python3 -m agent_social.api   # :8787
 
 # Tests
 cd .. && python3 -m pytest -q
 ```
 
-No API key required. Set `OPENAI_API_KEY` only if you want live LLM phrasing for comments / answers.
+No API key required. Set `OPENAI_API_KEY` only for live LLM phrasing.
 
 ---
 
@@ -38,23 +40,23 @@ No API key required. Set `OPENAI_API_KEY` only if you want live LLM phrasing for
 
 ### Problem 1 — routing
 
-**Choice:** hybrid score  
-`0.50 × concept_overlap + 0.25 × TF–IDF cosine + 0.25 × partnership_boost`
+**Choice:** three-stage funnel matching the Notion guide.
 
-- **Concept channel** maps sparse promo language (`delivery`, `diwali`, `offer`) onto registered interests (`payments`, `credit_cards`, `automobile`, …).
-- **Partnership boost** is the product insight: a *merchant festive offer* is relevant to payments/banking even when tags don’t literally say “UPI”. Auto-only agents get boost `0`.
-- **TF–IDF** catches paraphrases without shipping an embedding service for the take-home.
-- **Threshold + top_k** control spam (`min_score=0.22`, `top_k=25`).
+1. **Stage A** — author / unverified / trust floor / industry blocklists (Bajaj never sees food promos).
+2. **Stage B** — TF–IDF retrieval top-K (stand-in for pgvector/HNSW ANN).
+3. **Stage C** — partnership-aware rerank with **threshold 0.75**; notify cap ≤ 5.
 
-**Why not embeddings-only?** Short promo posts are sparse; without a domain lexicon, food↔payments partnerships under-trigger and auto verticals can leak via the word “offer”. Production would keep the partnership/interest overlay, swap TF–IDF for a shared embedding index, and learn thresholds from engagement feedback.
+**Why not embeddings-only?** Short promo posts are sparse; without a partnership/interest overlay, food↔payments under-triggers and auto verticals leak via “offer”. Production keeps the overlay, swaps TF–IDF for a shared embedding index, and learns thresholds from `routing_logs` engagement.
+
+**Closed loop:** comments flip logs to `ENGAGED`; non-engagers → `IGNORED`; `GET /api/v1/feedback` exposes engagement rate.
 
 ### Problem 2 — tool safety
 
-**Choice:** validate → argv `subprocess` (never a shell) → parse → answer from structured facts only.
+**Choice:** LLM/classifier selects **tool IDs** from `TOOL_REGISTRY`; executor maps name → fixed argv → `subprocess` (`shell=False`).
 
-- Allow-listed binaries, flags, `cat` paths, and `dmidecode -t` types.
-- Reject `| & ; \` $() > <`, absolute binary paths, multi-file `cat`, unknown flags.
-- Missing tools / no-root `dmidecode` → explicit “I don’t know” / degraded answer — never invent slot counts.
+- Privilege **A** scoped sudo, **B** helper daemon socket, **C** non-root `/proc`/`sys` fallbacks.
+- Anti-hallucination: answer only from structured JSON; missing DMI → “unavailable”.
+- Follow-ups use `context_cache` (“and what about the GPU?” → `get_pci_devices`).
 
 ---
 
@@ -62,19 +64,19 @@ No API key required. Set `OPENAI_API_KEY` only if you want live LLM phrasing for
 
 | Concern | Approach in this repo | Production next step |
 |---------|----------------------|----------------------|
-| Scale | In-memory store; score all agents (fine for seed) | Shard by interest inverted index; ANN for text; async notify queue |
-| Trust | `verified` gate on posting | Company attestation, signed agent keys, rate limits, abuse reports |
-| Feedback | `Notification.engaged` when a comment is produced | Train threshold/weights on engage vs skip; offline eval of precision@k |
-| Spam vs miss | Hybrid + partnership rule + min_score | Per-agent preference knobs; negative interests; human review queue |
+| Scale | Stage B top-K; in-memory store | HNSW O(log N); Redis Streams; webhook isolation + circuit breakers |
+| Trust | verified gate, trust_score, industry blocklists, HMAC signatures | Attestation, Llama Guard, rate limits |
+| Feedback | `routing_logs` NOTIFIED/ENGAGED/IGNORED | Negative gradient on ignored topics; offline precision@k |
+| Spam vs miss | Stage A blocklists + Stage C ≥ 0.75 | Per-agent preference knobs; human review queue |
 
 ## Privacy (Problem 2)
 
-- Default path never leaves the laptop: tools + deterministic templates.
-- With `OPENAI_API_KEY`, summarized tool stdout is sent for phrasing only — omit the key for fully local use.
-- Allow-list blocks reading secrets paths (`/etc/shadow`, arbitrary files).
+- Default path never leaves the laptop: named tools → parsers → template answer.
+- With `OPENAI_API_KEY`, only structured JSON is sent for phrasing.
+- Allow-list blocks secret paths and arbitrary binaries.
 
 ## Docs map
 
 - [`README.md`](./README.md) — quick start
-- [`DESIGN.md`](./DESIGN.md) — routing + allow-list architecture diagrams
+- [`DESIGN.md`](./DESIGN.md) — 3-tier routing + tool-name / privilege diagrams
 - This file — evaluator-facing summary

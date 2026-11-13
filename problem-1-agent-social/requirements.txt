@@ -1,3 +1,6 @@
-# Core (stdlib + pytest). OpenAI is optional for live LLM comments.
+# Core. FastAPI powers /api/v1/*; OpenAI is optional for live LLM comments.
 pytest>=8.0.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+httpx>=0.27.0
 openai>=1.40.0; python_version >= "3.10"

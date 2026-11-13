@@ -9,6 +9,7 @@ class AllowlistError(ValueError):
 
 
 # Exact binary names that may be invoked. No shells, no pipes, no redirects.
+# `sudo` is only accepted as a Strategy-A wrapper around an allow-listed tool.
 ALLOWED_BINARIES: frozenset[str] = frozenset(
     {
         "lscpu",
@@ -22,6 +23,7 @@ ALLOWED_BINARIES: frozenset[str] = frozenset(
         "df",
         "cat",
         "dmidecode",
+        "sudo",
     }
 )
 
@@ -43,7 +45,7 @@ ALLOWED_CAT_PATHS: frozenset[str] = frozenset(
 # Allowed flags per binary. Unknown flags are rejected.
 ALLOWED_FLAGS: dict[str, frozenset[str]] = {
     "lscpu": frozenset(),
-    "lsblk": frozenset({"-a", "-b", "-d", "-f", "-j", "-l", "-n", "-o", "-p", "-t", "-P"}),
+    "lsblk": frozenset({"-a", "-b", "-d", "-f", "-j", "-J", "-l", "-n", "-o", "-p", "-t", "-P"}),
     "free": frozenset({"-b", "-h", "-k", "-m", "-g", "-t", "-s", "-c"}),
     "lspci": frozenset({"-v", "-nn", "-k", "-mm"}),
     "lsusb": frozenset({"-v", "-t"}),
@@ -53,7 +55,17 @@ ALLOWED_FLAGS: dict[str, frozenset[str]] = {
     "df": frozenset({"-h", "-T", "-B"}),
     "cat": frozenset(),
     "dmidecode": frozenset({"-t", "-s"}),
+    "sudo": frozenset({"-n"}),
 }
+
+# Binaries sudo is allowed to invoke (Strategy A). Absolute /usr/sbin paths OK here only.
+SUDO_ALLOWED_BINARIES: frozenset[str] = frozenset(
+    {
+        "dmidecode",
+        "/usr/sbin/dmidecode",
+        "/sbin/dmidecode",
+    }
+)
 
 # dmidecode -t types that are informational (still may need root).
 ALLOWED_DMIDECODE_TYPES: frozenset[str] = frozenset(
@@ -141,6 +153,9 @@ def validate_command(command: str | list[str]) -> ValidatedCommand:
                 raise AllowlistError(f"forbidden shell token: {bad!r}")
 
     binary = argv[0]
+    if binary == "sudo":
+        return _validate_sudo(argv)
+
     if "/" in binary:
         raise AllowlistError("absolute/relative binary paths are not allowed; use basename only")
     if binary not in ALLOWED_BINARIES:
@@ -259,3 +274,22 @@ def _validate_dmidecode(args: list[str]) -> None:
             i += 2
             continue
         i += 1
+
+
+def _validate_sudo(argv: list[str]) -> ValidatedCommand:
+    """
+    Strategy A only: `sudo -n <allow-listed dmidecode argv>`.
+    Absolute path is permitted solely for the sudo target binary.
+    """
+    if len(argv) < 3:
+        raise AllowlistError("sudo requires -n and an allow-listed binary")
+    if argv[1] != "-n":
+        raise AllowlistError("only non-interactive sudo -n is allow-listed")
+    target = argv[2]
+    if target not in SUDO_ALLOWED_BINARIES:
+        raise AllowlistError(f"sudo target not allow-listed: {target}")
+    # Validate the remaining argv as if invoking dmidecode directly.
+    inner_bin = "dmidecode"
+    inner_args = argv[3:]
+    _validate_dmidecode(inner_args)
+    return ValidatedCommand(binary="sudo", argv=argv)

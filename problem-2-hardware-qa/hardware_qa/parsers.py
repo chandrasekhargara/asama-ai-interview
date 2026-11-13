@@ -56,20 +56,43 @@ class DmiMemorySummary:
     raw_error: str | None = None
 
 
+def _bytes_to_human(n: int) -> str:
+    gib = n / (1024**3)
+    if gib >= 1:
+        return f"{gib:.0f}Gi" if abs(gib - round(gib)) < 0.05 else f"{gib:.1f}Gi"
+    mib = n / (1024**2)
+    return f"{mib:.0f}Mi"
+
+
 def parse_free_h(text: str) -> MemoryInfo:
+    """Parse `free -h` or `free -b` Mem: rows."""
     info = MemoryInfo()
     for line in text.splitlines():
         if line.lower().startswith("mem:"):
             parts = line.split()
             # Mem: total used free shared buff/cache available
             if len(parts) >= 4:
-                info.total_human = parts[1]
-                info.used_human = parts[2]
-                info.free_human = parts[3]
-            if len(parts) >= 7:
-                info.available_human = parts[6]
+                total, used, free = parts[1], parts[2], parts[3]
+                if total.isdigit():
+                    info.total_kib = int(total) // 1024
+                    info.total_human = _bytes_to_human(int(total))
+                    info.used_human = _bytes_to_human(int(used)) if used.isdigit() else used
+                    info.free_human = _bytes_to_human(int(free)) if free.isdigit() else free
+                    if len(parts) >= 7 and parts[6].isdigit():
+                        info.available_human = _bytes_to_human(int(parts[6]))
+                else:
+                    info.total_human = total
+                    info.used_human = used
+                    info.free_human = free
+                    if len(parts) >= 7:
+                        info.available_human = parts[6]
             break
     return info
+
+
+def parse_free(text: str) -> MemoryInfo:
+    """Alias that accepts both free -h and free -b."""
+    return parse_free_h(text)
 
 
 def parse_meminfo(text: str) -> MemoryInfo:
@@ -112,8 +135,48 @@ def parse_lscpu(text: str) -> CpuInfo:
     return info
 
 
+def parse_lsblk_json(text: str) -> list[BlockDevice]:
+    """Parse `lsblk -J` JSON output."""
+    import json
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    devices: list[BlockDevice] = []
+
+    def walk(nodes: list) -> None:
+        for node in nodes:
+            devices.append(
+                BlockDevice(
+                    name=node.get("name") or node.get("NAME") or "",
+                    size=node.get("size") or node.get("SIZE"),
+                    type=node.get("type") or node.get("TYPE"),
+                    model=node.get("model") or node.get("MODEL"),
+                    rota=str(node["rota"]) if node.get("rota") is not None else (
+                        str(node["ROTA"]) if node.get("ROTA") is not None else None
+                    ),
+                    tran=node.get("tran") or node.get("TRAN"),
+                    fstype=node.get("fstype") or node.get("FSTYPE"),
+                    mountpoint=node.get("mountpoint") or node.get("MOUNTPOINT"),
+                )
+            )
+            children = node.get("children") or []
+            if children:
+                walk(children)
+
+    walk(data.get("blockdevices") or [])
+    return devices
+
+
 def parse_lsblk(text: str) -> list[BlockDevice]:
-    """Parse `lsblk -P` key=value rows, with a whitespace-table fallback."""
+    """Parse `lsblk -J` JSON, `lsblk -P` key=value rows, or a whitespace table."""
+    stripped = text.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("{"):
+        return parse_lsblk_json(text)
+
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return []
